@@ -7,6 +7,8 @@
  */
 #include "../result.h"
 
+#define SET_MAX_NAME_SIZE 0x48
+
 typedef enum {
     ColorSetId_Light=0,
     ColorSetId_Dark=1
@@ -32,6 +34,34 @@ typedef enum
     SetLanguage_ES419 = 14, ///< "LatinAmericanSpanish"
     SetLanguage_Total,      ///< Total languages supported by this enum.
 } SetLanguage;
+
+/// Region codes.
+typedef enum {
+    SetRegion_JPN = 0, ///< Japan
+    SetRegion_USA = 1, ///< The Americas
+    SetRegion_EUR = 2, ///< Europe
+    SetRegion_AUS = 3, ///< Australia/New Zealand
+} SetRegion;
+
+/// Command IDs for setsysGetFlag/setsysSetFlag.
+typedef enum {
+    SetSysFlag_LockScreen = 7,
+    SetSysFlag_ConsoleInformationUpload = 25,
+    SetSysFlag_AutomaticApplicationDownload = 27,
+    SetSysFlag_Quest = 47,
+    SetSysFlag_Usb30Enable = 65,
+    SetSysFlag_NfcEnable = 69,
+    SetSysFlag_WirelessLanEnable = 73,
+    SetSysFlag_BluetoothEnable = 88,
+    SetSysFlag_AutoUpdateEnable = 95,
+    SetSysFlag_BatteryPercentage = 99,
+    SetSysFlag_ExternalRtcReset = 101,
+    SetSysFlag_UsbFullKeyEnable = 103,
+    SetSysFlag_BluetoothAfhEnable = 111,
+    SetSysFlag_BluetoothBoostEnable = 113,
+    SetSysFlag_InRepairProcessEnable = 115,
+    SetSysFlag_HeadphoneVolumeUpdate = 117,
+} SetSysFlag;
 
 Result setInitialize(void);
 void setExit(void);
@@ -59,13 +89,28 @@ Result setGetAvailableLanguageCodes(s32 *total_entries, u64 *LanguageCodes, size
 Result setGetAvailableLanguageCodeCount(s32 *total);
 
 /// Gets the RegionCode.
-Result setGetRegionCode(s32 *RegionCode);
+Result setGetRegionCode(SetRegion *out);
 
 Result setsysInitialize(void);
 void setsysExit(void);
 
 /// Gets the current system theme.
-Result setsysGetColorSetId(ColorSetId* out);
+Result setsysGetColorSetId(ColorSetId *out);
+
+/// Sets the current system theme.
+Result setsysSetColorSetId(ColorSetId id);
+
+/**
+ * @brief Gets the size of a settings item value.
+ * @param out Pointer to output the size to.
+ */
+Result setsysGetSettingsItemValueSize(const char *name, const char *item_key, u64 *size_out);
+
+/**
+ * @brief Gets the value of a settings item.
+ * @param out Pointer to output the value to.
+ */
+Result setsysGetSettingsItemValue(const char *name, const char *item_key, void *value_out, size_t value_out_size);
 
 /**
  * @brief Gets the system's serial number.
@@ -74,37 +119,15 @@ Result setsysGetColorSetId(ColorSetId* out);
 Result setsysGetSerialNumber(char *serial);
 
 /**
- * @brief Gets the lockscreen status.
- * @param out Pointer to output the status to. 
+ * @brief Gets the status of the specified settings flag.
+ * @param flag The specified settings flag.
+ * @param out Output pointer for the status.
  */
-Result setsysGetLockScreenFlag(bool *out);
+Result setsysGetFlag(SetSysFlag flag, bool *out);
 
 /**
- * @brief Gets the console information upload status.
- * @param out Pointer to output the status to. 
+ * @brief Enables/disables the specified settings flag.
+ * @param flag The specified settings flag.
+ * @param enable To enable/disable the flag.
  */
-Result setsysGetConsoleInformationUploadFlag(bool *out);
-
-/**
- * @brief Gets the automatic application download status.
- * @param out Pointer to output the status to. 
- */
-Result setsysGetAutomaticApplicationDownloadFlag(bool *out);
-
-/**
- * @brief Gets the NFC status.
- * @param out Pointer to output the status to. 
- */
-Result setsysGetNfcEnableFlag(bool *out);
-
-/**
- * @brief Gets the wireless LAN status.
- * @param out Pointer to output the status to. 
- */
-Result setsysGetWirelessLanEnableFlag(bool *out);
-
-/**
- * @brief Gets the bluetooth status.
- * @param out Pointer to output the status to. 
- */
-Result setsysGetBluetoothEnableFlag(bool *out);
+Result setsysSetFlag(SetSysFlag flag, bool enable);

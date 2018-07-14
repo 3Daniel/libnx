@@ -21,7 +21,10 @@
 #include "runtime/devices/socket.h"
 #include "services/bsd.h"
 #include "services/sfdnsres.h"
+#include "services/nifm.h"
 #include "result.h"
+
+int _convert_errno(int bsdErrno);
 
 __thread int h_errno;
 
@@ -189,7 +192,8 @@ static int _socketParseBsdResult(struct _reent *r, int ret) {
             }
         }
         else
-            errno_ = g_bsdErrno; // Nintendo actually used the Linux errno definitions for their FreeBSD build :)
+            errno_ = _convert_errno(g_bsdErrno); /* Nintendo actually used the Linux errno definitions for their FreeBSD build :)
+                                                    but we still need to convert to newlib errno */
     }
 
     if(r == NULL)
@@ -829,7 +833,7 @@ static int inet_pton4(const char *src, void *dst) {
     size_t numBytes;
 
     int ret = _socketInetAtonDetail(&base, &numBytes, src, (struct in_addr *)dst);
-    return (ret == 1 && base == 10 && numBytes == 4) ? 1 : 0;
+    return (ret == 1 && base == 10 && numBytes == 3) ? 1 : 0;
 }
 
 /* Copyright (c) 1996 by Internet Software Consortium.
@@ -1313,13 +1317,13 @@ static struct addrinfo *_socketDeserializeAddrInfo(size_t *out_len, const struct
         // Nintendo just byteswaps everything recursively... even fields that are already byteswapped.
         switch(node->info.ai_family) {
             case AF_INET: {
-                struct sockaddr_in *sa = (struct sockaddr_in *)&node->info.ai_addr;
+                struct sockaddr_in *sa = (struct sockaddr_in *)node->info.ai_addr;
                 sa->sin_port = ntohs(sa->sin_port);
                 sa->sin_addr.s_addr = ntohl(sa->sin_addr.s_addr);
                 break;
             }
             case AF_INET6: {
-                struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *)&node->info.ai_addr;
+                struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *)node->info.ai_addr;
                 sa6->sin6_port = ntohs(sa6->sin6_port);
                 sa6->sin6_flowinfo = ntohl(sa6->sin6_flowinfo);
                 sa6->sin6_scope_id = ntohl(sa6->sin6_scope_id);
@@ -1580,6 +1584,23 @@ cleanup:
     return gaie;
 }
 
+long gethostid(void) {
+    Result rc;
+    u32 id;
+    rc = nifmGetCurrentIpAddress(&id);
+    if(R_SUCCEEDED(rc))
+        return id;
+    return INADDR_LOOPBACK; 
+}
+
+int gethostname(char *name, size_t namelen) {
+    // The Switch doesn't have a proper name, so let's use its IP
+    struct in_addr in;
+    in.s_addr = gethostid();
+    const char *hostname = inet_ntop(AF_INET, &in, name, namelen);
+    return hostname == NULL ? -1 : 0;
+}
+
 // Unimplementable functions, left for compliance:
 struct hostent *gethostent(void) { h_errno = NO_RECOVERY; errno = ENOSYS; return NULL; }
 struct netent *getnetbyaddr(uint32_t a, int b) { (void)a; (void)b; h_errno = NO_RECOVERY; errno = ENOSYS; return NULL; }
@@ -1594,17 +1615,3 @@ struct servent *getservent(void) { h_errno = NO_RECOVERY; errno = ENOSYS; return
 void sethostent(int a) { (void)a;}
 void setnetent(int a) { (void)a;}
 void setprotoent(int a) { (void)a; }
-
-/************************************************************************************************************************/
-
-long gethostid(void) {
-    return INADDR_LOOPBACK; //FIXME
-}
-
-int gethostname(char *name, size_t namelen) {
-    // The Switch doesn't have a proper name, so let's use its IP
-    struct in_addr in;
-    in.s_addr = gethostid();
-    const char *hostname = inet_ntop(AF_INET, &in, name, namelen);
-    return hostname == NULL ? -1 : 0;
-}
