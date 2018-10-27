@@ -17,6 +17,9 @@ void NORETURN fatalSimple(Result err) {
 void fatalWithType(Result err, FatalType type) {
     Result rc = 0;
 
+    //Only 3.0.0+ supports FatalType_ErrorScreen, when specified on pre-3.0.0 use FatalType_ErrorReportAndErrorScreen instead.
+    if (type == FatalType_ErrorScreen && !kernelAbove300()) type = FatalType_ErrorReportAndErrorScreen;
+
     if (detectDebugger()) {
         svcBreak(0x80000000, err, 0);
     }
@@ -37,8 +40,9 @@ void fatalWithType(Result err, FatalType type) {
             struct {
                 u64 magic;
                 u64 cmd_id;
-                u64 result;
-                u64 type;
+                u32 result;
+                u32 type;
+                u64 pid_placeholder;
             } *raw;
 
             raw = ipcPrepareHeader(&c, sizeof(*raw));
@@ -47,6 +51,7 @@ void fatalWithType(Result err, FatalType type) {
             raw->cmd_id = 1;
             raw->result = err;
             raw->type = type;
+            raw->pid_placeholder = 0; // Overwritten by fatal with PID descriptor.
 
             ipcDispatch(srv);
         }

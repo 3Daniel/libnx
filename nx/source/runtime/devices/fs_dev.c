@@ -456,6 +456,17 @@ Result fsdevUnmountAll(void)
   return 0;
 }
 
+FsFileSystem* fsdevGetDeviceFileSystem(const char *name)
+{
+  fsdev_fsdevice *device;
+
+  device = fsdevFindDevice(name);
+  if(device==NULL)
+    return NULL;
+
+  return &device->fs;
+}
+
 FsFileSystem* fsdevGetDefaultFileSystem(void)
 {
   if(!fsdev_initialised) return NULL;
@@ -1039,8 +1050,17 @@ fsdev_chdir(struct _reent *r,
   if(R_SUCCEEDED(rc))
   {
     fsDirClose(&fd);
-    strncpy(__cwd, __fixedpath, PATH_MAX);
+    strncpy(__cwd, fs_path, PATH_MAX);
     __cwd[PATH_MAX] = '\0';
+
+    size_t __cwd_len = strlen(__cwd);
+
+    if (__cwd[__cwd_len-1] != '/' && __cwd_len < PATH_MAX)
+    {
+      __cwd[__cwd_len] = '/';
+      __cwd[__cwd_len+1] = '\0';
+    }
+
     fsdev_fsdevice_cwd = device->id;
     return 0;
   }

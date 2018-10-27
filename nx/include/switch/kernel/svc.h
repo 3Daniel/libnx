@@ -5,6 +5,7 @@
  */
 #pragma once
 #include "../types.h"
+#include "../arm/thread_context.h"
 
 /// Pseudo handle for the current process.
 #define CUR_PROCESS_HANDLE 0xFFFF8001
@@ -121,14 +122,14 @@ typedef enum {
 
 /// Process States.
 typedef enum {
-    ProcessState_Created=0,        ///<Newly-created process.
-    ProcessState_DebugAttached=1,  ///<Process attached to debugger.
-    ProcessState_DebugDetached=2,  ///<Process detached from debugger.
-    ProcessState_Crashed=3,        ///<Process that has just creashed.
-    ProcessState_Running=4,        ///<Process executing normally.
-    ProcessState_Exiting=5,        ///<Process has begun exiting.
-    ProcessState_Exited=6,         ///<Process has finished exiting.
-    ProcessState_DebugSuspended=7, ///<Process execution suspended by debugger.
+    ProcessState_Created=0,             ///<Newly-created process, not yet started.
+    ProcessState_CreatedAttached=1,     ///<Newly-created process, not yet started but attached to debugger.
+    ProcessState_Running=2,             ///<Process that is running normally (and detached from any debugger).
+    ProcessState_Crashed=3,             ///<Process that has just crashed.
+    ProcessState_RunningAttached=4,     ///<Process that is running normally, attached to a debugger.
+    ProcessState_Exiting=5,             ///<Process has begun exiting.
+    ProcessState_Exited=6,              ///<Process has finished exiting.
+    ProcessState_DebugSuspended=7,      ///<Process execution suspended by debugger.
 } ProcessState;
 
 /// Debug Thread Parameters.
@@ -171,7 +172,7 @@ Result svcSetMemoryPermission(void* addr, u64 size, u32 perm);
  * @param[in] val0 State0
  * @param[in] val1 State1
  * @return Result code.
- * @remark See <a href="http://switchbrew.org/index.php?title=SVC#svcSetMemoryAttribute">switchbrew.org Wiki</a> for more details.
+ * @remark See <a href="https://switchbrew.org/wiki/SVC#svcSetMemoryAttribute">switchbrew.org Wiki</a> for more details.
  * @note Syscall number 0x02.
  */
 Result svcSetMemoryAttribute(void* addr, u64 size, u32 val0, u32 val1);
@@ -259,6 +260,20 @@ Result svcGetThreadPriority(u32* priority, Handle handle);
  * @note Syscall number 0x0D.
  */
 Result svcSetThreadPriority(Handle handle, u32 priority);
+
+/**
+ * @brief Gets a thread's core mask.
+ * @return Result code.
+ * @note Syscall number 0x0E.
+ */
+Result svcGetThreadCoreMask(s32* preferred_core, u32* affinity_mask, Handle handle);
+
+/**
+ * @brief Sets a thread's core mask.
+ * @return Result code.
+ * @note Syscall number 0x0F.
+ */
+Result svcSetThreadCoreMask(Handle handle, s32 preferred_core, u32 affinity_mask);
 
 /**
  * @brief Gets the current processor's number.
@@ -502,7 +517,7 @@ Result svcOutputDebugString(const char *str, u64 size);
  * @param[in] handle Handle of the object to retrieve information from, or \ref INVALID_HANDLE to retrieve information about the system.
  * @param[in] id1 Second ID of the property to retrieve.
  * @return Result code.
- * @remark The full list of property IDs can be found on the <a href="http://switchbrew.org/index.php?title=SVC#svcGetInfo">switchbrew.org wiki</a>.
+ * @remark The full list of property IDs can be found on the <a href="https://switchbrew.org/wiki/SVC#svcGetInfo">switchbrew.org wiki</a>.
  * @note Syscall number 0x29.
  */
 Result svcGetInfo(u64* out, u64 id0, Handle handle, u64 id1);
@@ -516,6 +531,7 @@ Result svcGetInfo(u64* out, u64 id0, Handle handle, u64 id1);
  * @brief Maps new heap memory at the desired address. [3.0.0+]
  * @return Result code.
  * @note Syscall number 0x2A.
+ * @warning This is a privileged syscall. Use \ref envIsSyscallHinted to check if it is available.
  */
 Result svcMapPhysicalMemory(void *address, u64 size);
 
@@ -523,21 +539,9 @@ Result svcMapPhysicalMemory(void *address, u64 size);
  * @brief Undoes the effects of \ref svcMapPhysicalMemory. [3.0.0+]
  * @return Result code.
  * @note Syscall number 0x2B.
- */
-Result svcUnmapPhysicalMemory(void *address, u64 size);
-
-///@}
-
-///@name Process and thread management
-///@{
-
-/**
- * @brief Configures the pause/unpause status of a thread.
- * @return Result code.
- * @note Syscall number 0x32.
  * @warning This is a privileged syscall. Use \ref envIsSyscallHinted to check if it is available.
  */
-Result svcSetThreadActivity(Handle thread, bool paused);
+Result svcUnmapPhysicalMemory(void *address, u64 size);
 
 ///@}
 
@@ -548,6 +552,7 @@ Result svcSetThreadActivity(Handle thread, bool paused);
  * @brief Gets the maximum value a LimitableResource can have, for a Resource Limit handle.
  * @return Result code.
  * @note Syscall number 0x30.
+ * @warning This is a privileged syscall. Use \ref envIsSyscallHinted to check if it is available.
  */
 Result svcGetResourceLimitLimitValue(u64 *out, Handle reslimit_h, LimitableResource which);
 
@@ -555,8 +560,31 @@ Result svcGetResourceLimitLimitValue(u64 *out, Handle reslimit_h, LimitableResou
  * @brief Gets the maximum value a LimitableResource can have, for a Resource Limit handle.
  * @return Result code.
  * @note Syscall number 0x31.
+ * @warning This is a privileged syscall. Use \ref envIsSyscallHinted to check if it is available.
  */
 Result svcGetResourceLimitCurrentValue(u64 *out, Handle reslimit_h, LimitableResource which);
+
+///@}
+
+///@name Process and thread management
+///@{
+
+/**
+ * @brief Configures the pause/unpause status of a thread.
+ * @return Result code.
+ * @note Syscall number 0x32.
+ */
+Result svcSetThreadActivity(Handle thread, bool paused);
+
+/**
+ * @brief Dumps the registers of a thread paused by @ref svcSetThreadActivity (register groups: all).
+ * @param[out] ctx Output thread context (register dump).
+ * @param[in] thread Thread handle.
+ * @return Result code.
+ * @note Syscall number 0x33.
+ * @warning Official kernel will not dump x0..x18 if the thread is currently executing a system call, and prior to 6.0.0 doesn't dump TPIDR_EL0.
+ */
+Result svcGetThreadContext3(ThreadContext* ctx, Handle thread);
 
 ///@}
 
@@ -604,6 +632,7 @@ Result svcReplyAndReceiveWithUserBuffer(s32* index, void* usrBuffer, u64 size, c
  * @brief Creates a system event.
  * @return Result code.
  * @note Syscall number 0x45.
+ * @warning This is a privileged syscall. Use \ref envIsSyscallHinted to check if it is available.
  */
 Result svcCreateEvent(Handle* server_handle, Handle* client_handle);
 
@@ -818,16 +847,44 @@ Result svcGetDebugEvent(u8* event_out, Handle debug);
  * @return Result code.
  * @note Syscall number 0x64.
  * @warning This is a privileged syscall. Use \ref envIsSyscallHinted to check if it is available.
+ * @warning Only exists on 3.0.0+. For older versions use \ref svcContinueDebugEventPre300.
  */
-Result svcContinueDebugEvent(Handle debug, u32 flags, u64 threadID);
+Result svcContinueDebugEvent(Handle debug, u32 flags, u64* tid_list, u32 num_tids);
 
 /**
- * @brief Gets the context of a thread in a debugging session.
+ * @brief Continues a debugging session.
  * @return Result code.
+ * @note Syscall number 0x64.
+ * @warning This is a privileged syscall. Use \ref envIsSyscallHinted to check if it is available.
+ * @warning Only exists on 1.0.0-2.3.0. For newer versions use \ref svcContinueDebugEvent.
+ */
+Result svcLegacyContinueDebugEvent(Handle debug, u32 flags, u64 threadID);
+
+/**
+ * @brief Gets the context (dump the registers) of a thread in a debugging session.
+ * @return Result code.
+ * @param[out] ctx Output thread context (register dump).
+ * @param[in] debug Debug handle.
+ * @param[in] threadId ID of the thread to dump the context of.
+ * @param[in] flags Register groups to select, combination of @ref RegisterGroup flags.
  * @note Syscall number 0x67.
+ * @warning Official kernel will not dump any CPU GPR if the thread is currently executing a system call (except @ref svcBreak and @ref svcReturnFromException).
  * @warning This is a privileged syscall. Use \ref envIsSyscallHinted to check if it is available.
  */
-Result svcGetDebugThreadContext(u8* out, Handle debug, u64 threadID, u32 flags);
+Result svcGetDebugThreadContext(ThreadContext* ctx, Handle debug, u64 threadID, u32 flags);
+
+/**
+ * @brief Gets the context (dump the registers) of a thread in a debugging session.
+ * @return Result code.
+ * @param[in] debug Debug handle.
+ * @param[in] threadId ID of the thread to set the context of.
+ * @param[in] ctx Input thread context (register dump).
+ * @param[in] flags Register groups to select, combination of @ref RegisterGroup flags.
+ * @note Syscall number 0x68.
+ * @warning Official kernel will return an error if the thread is currently executing a system call (except @ref svcBreak and @ref svcReturnFromException).
+ * @warning This is a privileged syscall. Use \ref envIsSyscallHinted to check if it is available.
+ */
+Result svcSetDebugThreadContext(Handle debug, u64 threadID, const ThreadContext* ctx, u32 flags);
 
 ///@}
 
@@ -899,7 +956,7 @@ Result svcGetDebugThreadParam(u64* out_64, u32* out_32, Handle debug, u64 thread
  * @param[in] handle Handle of the object to retrieve information from, or \ref INVALID_HANDLE to retrieve information about the system.
  * @param[in] id1 Second ID of the property to retrieve.
  * @return Result code.
- * @remark The full list of property IDs can be found on the <a href="http://switchbrew.org/index.php?title=SVC#svcGetSystemInfo">switchbrew.org wiki</a>.
+ * @remark The full list of property IDs can be found on the <a href="https://switchbrew.org/wiki/SVC#svcGetSystemInfo">switchbrew.org wiki</a>.
  * @note Syscall number 0x6F.
  * @warning This is a privileged syscall. Use \ref envIsSyscallHinted to check if it is available.
  */
@@ -909,7 +966,7 @@ Result svcGetSystemInfo(u64* out, u64 id0, Handle handle, u64 id1);
 
 ///@name Inter-process communication (IPC)
 ///@{
-    
+
 /**
  * @brief Creates a port.
  * @return Result code.

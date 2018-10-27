@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include <string.h>
 #include <malloc.h>
+#include <alloca.h>
 #include <sys/iosupport.h>
 
 #include <sys/select.h>
@@ -23,6 +24,8 @@
 #include "services/sfdnsres.h"
 #include "services/nifm.h"
 #include "result.h"
+
+__attribute__((weak)) size_t __nx_pollfd_sb_max_fds = 64;
 
 int _convert_errno(int bsdErrno);
 
@@ -118,6 +121,9 @@ Result socketInitialize(const SocketInitConfig *config) {
     if(dev != -1)
         return MAKERESULT(Module_Libnx, LibnxError_AlreadyInitialized);
 
+    ret = nifmInitialize();
+    if(R_FAILED(ret)) return ret;
+
     ret = bsdInitialize(&bcfg);
     if(R_SUCCEEDED(ret))
         dev = AddDevice(&g_socketDevoptab);
@@ -144,6 +150,7 @@ Result socketInitialize(const SocketInitConfig *config) {
 void socketExit(void) {
     RemoveDevice("soc:");
     bsdExit();
+    nifmExit();
 }
 
 Result socketGetLastBsdResult(void) {
@@ -180,6 +187,7 @@ static int _socketParseBsdResult(struct _reent *r, int ret) {
             switch(g_bsdResult) {
                 case 0xD201:
                     errno_ = ENFILE;
+                    break;
                 case 0xD401:
                     errno_ = EFAULT;
                     break;
@@ -260,7 +268,10 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struc
             ++numfds;
     }
 
-    pollinfo = (struct pollfd*)malloc(numfds * sizeof(struct pollfd));
+    if(numfds <= __nx_pollfd_sb_max_fds)
+        pollinfo = (struct pollfd *)alloca(numfds * sizeof(struct pollfd));
+    else
+        pollinfo = (struct pollfd *)malloc(numfds * sizeof(struct pollfd));
     if(pollinfo == NULL) {
         errno = ENOMEM;
         return -1;
@@ -270,7 +281,11 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struc
         if((readfds && FD_ISSET(i, readfds))
         || (writefds && FD_ISSET(i, writefds))
         || (exceptfds && FD_ISSET(i, exceptfds))) {
-            pollinfo[j].fd      = i;
+            pollinfo[j].fd      = _socketGetFd(i);
+            if(pollinfo[j].fd == -1) {
+                rc = -1;
+                goto cleanup;
+            }
             pollinfo[j].events  = 0;
             pollinfo[j].revents = 0;
 
@@ -284,14 +299,12 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struc
     }
 
     if(timeout)
-        rc = poll(pollinfo, numfds, timeout->tv_sec*1000 + timeout->tv_usec/1000);
+        rc = _socketParseBsdResult(NULL, bsdPoll(pollinfo, numfds, timeout->tv_sec*1000 + timeout->tv_usec/1000));
     else
-        rc = poll(pollinfo, numfds, -1);
+        rc = _socketParseBsdResult(NULL, bsdPoll(pollinfo, numfds, -1));
 
-    if(rc < 0) {
-        free(pollinfo);
-        return rc;
-    }
+    if(rc < 0)
+        goto cleanup;
 
     for(i = 0, j = 0, rc = 0; i < nfds; ++i) {
         found = 0;
@@ -327,8 +340,9 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struc
         }
     }
 
-    free(pollinfo);
-
+cleanup:
+    if(numfds > __nx_pollfd_sb_max_fds)
+        free(pollinfo);
     return rc;
 }
 
@@ -342,7 +356,10 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
         return -1;
     }
 
-    fds2 = (struct pollfd *)malloc(nfds * sizeof(struct pollfd));
+    if(nfds <= __nx_pollfd_sb_max_fds)
+        fds2 = (struct pollfd *)alloca(nfds * sizeof(struct pollfd));
+    else
+        fds2 = (struct pollfd *)malloc(nfds * sizeof(struct pollfd));
     if(fds2 == NULL) {
         errno = ENOMEM;
         return -1;
@@ -351,10 +368,14 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
     for(nfds_t i = 0; i < nfds; i++) {
         fds2[i].events = fds[i].events;
         fds2[i].revents = fds[i].revents;
-        fds2[i].fd = _socketGetFd(fds[i].fd);
-        if(fds2[i].fd == -1) {
-            ret = -1;
-            break;
+        if(fds[i].fd < 0) {
+            fds2[i].fd = -1;
+        } else {
+            fds2[i].fd = _socketGetFd(fds[i].fd);
+            if(fds2[i].fd == -1) {
+                ret = -1;
+                break;
+            }
         }
     }
 
@@ -367,7 +388,8 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
         }
     }
 
-    free(fds2);
+    if(nfds > __nx_pollfd_sb_max_fds)
+        free(fds2);
     return ret;
 }
 
@@ -1169,17 +1191,19 @@ static struct hostent *_socketDeserializeHostent(int *err, const void *out_he_se
         return NULL;
     }
 
-    he->h_aliases = (char **)(he->h_name + name_size);
-    he->h_addrtype = addrtype;
-    he->h_length = addrlen;
-    he->h_addr_list = he->h_aliases + nb_aliases + 1;
-
-    if(name_size == 1)
+    if (name_size == 1) {
         he->h_name = NULL;
+        he->h_aliases = (char**)((char*)he + sizeof(struct hostent));
+    }
     else {
         he->h_name = (char*)he + sizeof(struct hostent);
         memcpy(he->h_name, buf, name_size);
+        he->h_aliases = (char **)(he->h_name + name_size);
     }
+
+    he->h_addrtype = addrtype;
+    he->h_length = addrlen;
+    he->h_addr_list = he->h_aliases + nb_aliases + 1;
 
     if(nb_aliases>0) {
         char *alias = (char *)(he->h_addr_list + nb_addresses + 1);

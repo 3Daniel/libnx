@@ -4,6 +4,7 @@
 #include "result.h"
 #include "arm/atomics.h"
 #include "kernel/ipc.h"
+#include "kernel/detect.h"
 #include "services/fs.h"
 #include "services/sm.h"
 
@@ -18,6 +19,10 @@ Result fsInitialize(void)
         return 0;
 
     Result rc = smGetService(&g_fsSrv, "fsp-srv");
+    
+    if (R_SUCCEEDED(rc)) {
+        rc = serviceConvertToDomain(&g_fsSrv);
+    }
 
     if (R_SUCCEEDED(rc)) {
         IpcCommand c;
@@ -30,7 +35,7 @@ Result fsInitialize(void)
             u64 unk;
         } *raw;
 
-        raw = ipcPrepareHeader(&c, sizeof(*raw));
+        raw = serviceIpcPrepareHeader(&g_fsSrv, &c, sizeof(*raw));
 
         raw->magic = SFCI_MAGIC;
         raw->cmd_id = 1;
@@ -40,12 +45,13 @@ Result fsInitialize(void)
 
         if (R_SUCCEEDED(rc)) {
             IpcParsedCommand r;
-            ipcParse(&r);
-
             struct {
                 u64 magic;
                 u64 result;
-            } *resp = r.Raw;
+            } *resp;
+
+            serviceIpcParse(&g_fsSrv, &r, sizeof(*resp));
+            resp = r.Raw;
 
             rc = resp->result;
         }
@@ -64,6 +70,86 @@ Service* fsGetServiceSession(void) {
     return &g_fsSrv;
 }
 
+Result fsOpenBisStorage(FsStorage* out, u32 PartitionId) {
+    IpcCommand c;
+    ipcInitialize(&c);
+
+    struct {
+        u64 magic;
+        u64 cmd_id;
+        u32 PartitionId;
+    } *raw;
+
+    raw = serviceIpcPrepareHeader(&g_fsSrv, &c, sizeof(*raw));
+
+    raw->magic = SFCI_MAGIC;
+    raw->cmd_id = 12;
+    raw->PartitionId = PartitionId;
+
+    Result rc = serviceIpcDispatch(&g_fsSrv);
+
+    if (R_SUCCEEDED(rc)) {
+        IpcParsedCommand r;
+        struct {
+            u64 magic;
+            u64 result;
+        } *resp;
+
+        serviceIpcParse(&g_fsSrv, &r, sizeof(*resp));
+        resp = r.Raw;
+
+        rc = resp->result;
+
+        if (R_SUCCEEDED(rc)) {
+            serviceCreateSubservice(&out->s, &g_fsSrv, &r, 0);
+        }
+    }
+
+    return rc;
+}
+
+Result fsOpenBisFileSystem(FsFileSystem* out, u32 PartitionId, const char* string) {
+    IpcCommand c;
+    ipcInitialize(&c);
+
+    char tmpstr[FS_MAX_PATH] = {0};
+    strncpy(tmpstr, string, sizeof(tmpstr)-1);
+    ipcAddSendStatic(&c, tmpstr, sizeof(tmpstr), 0);
+
+    struct {
+        u64 magic;
+        u64 cmd_id;
+        u32 PartitionId;
+    } *raw;
+
+    raw = serviceIpcPrepareHeader(&g_fsSrv, &c, sizeof(*raw));
+
+    raw->magic = SFCI_MAGIC;
+    raw->cmd_id = 11;
+    raw->PartitionId = PartitionId;
+
+    Result rc = serviceIpcDispatch(&g_fsSrv);
+
+    if (R_SUCCEEDED(rc)) {
+        IpcParsedCommand r;
+        struct {
+            u64 magic;
+            u64 result;
+        } *resp;
+
+        serviceIpcParse(&g_fsSrv, &r, sizeof(*resp));
+        resp = r.Raw;
+
+        rc = resp->result;
+
+        if (R_SUCCEEDED(rc)) {
+            serviceCreateSubservice(&out->s, &g_fsSrv, &r, 0);
+        }
+    }
+
+    return rc;
+}
+
 Result fsMountSdcard(FsFileSystem* out) {
     IpcCommand c;
     ipcInitialize(&c);
@@ -73,7 +159,7 @@ Result fsMountSdcard(FsFileSystem* out) {
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&g_fsSrv, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 18;
@@ -82,17 +168,18 @@ Result fsMountSdcard(FsFileSystem* out) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&g_fsSrv, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
 
         if (R_SUCCEEDED(rc)) {
-            serviceCreate(&out->s, r.Handles[0]);
+            serviceCreateSubservice(&out->s, &g_fsSrv, &r, 0);
         }
     }
 
@@ -110,7 +197,7 @@ Result fsMountSaveData(FsFileSystem* out, u8 inval, FsSave *save) {
         FsSave save;
     } PACKED *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&g_fsSrv, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 51;
@@ -121,17 +208,18 @@ Result fsMountSaveData(FsFileSystem* out, u8 inval, FsSave *save) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&g_fsSrv, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
 
         if (R_SUCCEEDED(rc)) {
-            serviceCreate(&out->s, r.Handles[0]);
+            serviceCreateSubservice(&out->s, &g_fsSrv, &r, 0);
         }
     }
 
@@ -149,7 +237,7 @@ Result fsMountSystemSaveData(FsFileSystem* out, u8 inval, FsSave *save) {
         FsSave save;
     } PACKED *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&g_fsSrv, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 52;
@@ -160,17 +248,18 @@ Result fsMountSystemSaveData(FsFileSystem* out, u8 inval, FsSave *save) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&g_fsSrv, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
 
         if (R_SUCCEEDED(rc)) {
-            serviceCreate(&out->s, r.Handles[0]);
+            serviceCreateSubservice(&out->s, &g_fsSrv, &r, 0);
         }
     }
 
@@ -193,13 +282,13 @@ Result fsOpenSaveDataIterator(FsSaveDataIterator* out, s32 SaveDataSpaceId) {
     } *raw2;
 
     if (SaveDataSpaceId == FsSaveDataSpaceId_All) {
-        raw = ipcPrepareHeader(&c, sizeof(*raw));
+        raw = serviceIpcPrepareHeader(&g_fsSrv, &c, sizeof(*raw));
 
         raw->magic = SFCI_MAGIC;
         raw->cmd_id = 60;
     }
     else {
-        raw2 = ipcPrepareHeader(&c, sizeof(*raw2));
+        raw2 = serviceIpcPrepareHeader(&g_fsSrv, &c, sizeof(*raw2));
 
         raw2->magic = SFCI_MAGIC;
         raw2->cmd_id = 61;
@@ -210,17 +299,18 @@ Result fsOpenSaveDataIterator(FsSaveDataIterator* out, s32 SaveDataSpaceId) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&g_fsSrv, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
 
         if (R_SUCCEEDED(rc)) {
-            serviceCreate(&out->s, r.Handles[0]);
+            serviceCreateSubservice(&out->s, &g_fsSrv, &r, 0);
         }
     }
 
@@ -236,7 +326,7 @@ Result fsOpenDataStorageByCurrentProcess(FsStorage* out) {
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&g_fsSrv, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 200;
@@ -245,17 +335,18 @@ Result fsOpenDataStorageByCurrentProcess(FsStorage* out) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&g_fsSrv, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
 
         if (R_SUCCEEDED(rc)) {
-            serviceCreate(&out->s, r.Handles[0]);
+            serviceCreateSubservice(&out->s, &g_fsSrv, &r, 0);
         }
     }
 
@@ -271,7 +362,7 @@ Result fsOpenDeviceOperator(FsDeviceOperator* out) {
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&g_fsSrv, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 400;
@@ -280,17 +371,18 @@ Result fsOpenDeviceOperator(FsDeviceOperator* out) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&g_fsSrv, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
 
         if (R_SUCCEEDED(rc)) {
-            serviceCreate(&out->s, r.Handles[0]);
+            serviceCreateSubservice(&out->s, &g_fsSrv, &r, 0);
         }
     }
 
@@ -306,7 +398,7 @@ Result fsOpenSdCardDetectionEventNotifier(FsEventNotifier* out) {
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&g_fsSrv, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 500;
@@ -315,17 +407,18 @@ Result fsOpenSdCardDetectionEventNotifier(FsEventNotifier* out) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&g_fsSrv, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
 
         if (R_SUCCEEDED(rc)) {
-            serviceCreate(&out->s, r.Handles[0]);
+            serviceCreateSubservice(&out->s, &g_fsSrv, &r, 0);
         }
     }
 
@@ -354,6 +447,69 @@ Result fsMount_SystemSaveData(FsFileSystem* out, u64 saveID) {
     return fsMountSystemSaveData(out, FsSaveDataSpaceId_NandSystem, &save);
 }
 
+Result fsOpenFileSystem(FsFileSystem* out, FsFileSystemType fsType, const char* contentPath) {
+    return fsOpenFileSystemWithId(out, 0, fsType, contentPath);
+}
+
+Result fsOpenFileSystemWithId(FsFileSystem* out, u64 titleId, FsFileSystemType fsType, const char* contentPath) {
+    char sendStr[FS_MAX_PATH] = {0};
+    strncpy(sendStr, contentPath, sizeof(sendStr)-1);
+
+    IpcCommand c;
+    ipcInitialize(&c);
+    ipcAddSendStatic(&c, sendStr, sizeof(sendStr), 0);
+
+    if (kernelAbove200()) {
+        struct {
+            u64 magic;
+            u64 cmd_id;
+            u32 fsType;
+            u64 titleId;
+        } *raw;
+    
+        raw = serviceIpcPrepareHeader(&g_fsSrv, &c, sizeof(*raw));
+    
+        raw->magic = SFCI_MAGIC;
+        raw->cmd_id = 8;
+        raw->fsType = fsType;
+        raw->titleId = titleId;
+    }
+    else {
+        struct {
+            u64 magic;
+            u64 cmd_id;
+            u32 fsType;
+        } *raw;
+    
+        raw = serviceIpcPrepareHeader(&g_fsSrv, &c, sizeof(*raw));
+    
+        raw->magic = SFCI_MAGIC;
+        raw->cmd_id = 0;
+        raw->fsType = fsType;
+    }
+
+    Result rc = serviceIpcDispatch(&g_fsSrv);
+
+    if (R_SUCCEEDED(rc)) {
+        IpcParsedCommand r;
+        struct {
+            u64 magic;
+            u64 result;
+        } *resp;
+
+        serviceIpcParse(&g_fsSrv, &r, sizeof(*resp));
+        resp = r.Raw;
+
+        rc = resp->result;
+
+        if (R_SUCCEEDED(rc)) {
+            serviceCreateSubservice(&out->s, &g_fsSrv, &r, 0);
+        }
+    }
+
+    return rc;
+}
+
 // IFileSystem impl
 Result fsFsCreateFile(FsFileSystem* fs, const char* path, size_t size, int flags) {
     IpcCommand c;
@@ -368,7 +524,7 @@ Result fsFsCreateFile(FsFileSystem* fs, const char* path, size_t size, int flags
         u32 flags;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&fs->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 0;
@@ -380,12 +536,13 @@ Result fsFsCreateFile(FsFileSystem* fs, const char* path, size_t size, int flags
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&fs->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
     }
@@ -403,7 +560,7 @@ Result fsFsDeleteFile(FsFileSystem* fs, const char* path) {
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&fs->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 1;
@@ -412,12 +569,13 @@ Result fsFsDeleteFile(FsFileSystem* fs, const char* path) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&fs->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
     }
@@ -435,7 +593,7 @@ Result fsFsCreateDirectory(FsFileSystem* fs, const char* path) {
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&fs->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 2;
@@ -444,12 +602,13 @@ Result fsFsCreateDirectory(FsFileSystem* fs, const char* path) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&fs->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
     }
@@ -467,7 +626,7 @@ Result fsFsDeleteDirectory(FsFileSystem* fs, const char* path) {
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&fs->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 3;
@@ -476,12 +635,13 @@ Result fsFsDeleteDirectory(FsFileSystem* fs, const char* path) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&fs->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
     }
@@ -499,7 +659,7 @@ Result fsFsDeleteDirectoryRecursively(FsFileSystem* fs, const char* path) {
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&fs->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 4;
@@ -508,12 +668,13 @@ Result fsFsDeleteDirectoryRecursively(FsFileSystem* fs, const char* path) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&fs->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
     }
@@ -532,7 +693,7 @@ Result fsFsRenameFile(FsFileSystem* fs, const char* path0, const char* path1) {
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&fs->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 5;
@@ -541,12 +702,13 @@ Result fsFsRenameFile(FsFileSystem* fs, const char* path0, const char* path1) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&fs->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
     }
@@ -565,7 +727,7 @@ Result fsFsRenameDirectory(FsFileSystem* fs, const char* path0, const char* path
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&fs->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 6;
@@ -574,12 +736,13 @@ Result fsFsRenameDirectory(FsFileSystem* fs, const char* path0, const char* path
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&fs->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
     }
@@ -597,7 +760,7 @@ Result fsFsGetEntryType(FsFileSystem* fs, const char* path, FsEntryType* out) {
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&fs->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 7;
@@ -606,13 +769,14 @@ Result fsFsGetEntryType(FsFileSystem* fs, const char* path, FsEntryType* out) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
             u32 type;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&fs->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
 
@@ -635,7 +799,7 @@ Result fsFsOpenFile(FsFileSystem* fs, const char* path, int flags, FsFile* out) 
         u32 flags;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&fs->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 8;
@@ -645,17 +809,18 @@ Result fsFsOpenFile(FsFileSystem* fs, const char* path, int flags, FsFile* out) 
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&fs->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
 
         if (R_SUCCEEDED(rc)) {
-            serviceCreate(&out->s, r.Handles[0]);
+            serviceCreateSubservice(&out->s, &fs->s, &r, 0);
         }
     }
 
@@ -673,7 +838,7 @@ Result fsFsOpenDirectory(FsFileSystem* fs, const char* path, int flags, FsDir* o
         u32 flags;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&fs->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 9;
@@ -683,17 +848,18 @@ Result fsFsOpenDirectory(FsFileSystem* fs, const char* path, int flags, FsDir* o
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&fs->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
 
         if (R_SUCCEEDED(rc)) {
-            serviceCreate(&out->s, r.Handles[0]);
+            serviceCreateSubservice(&out->s, &fs->s, &r, 0);
         }
     }
 
@@ -709,7 +875,7 @@ Result fsFsCommit(FsFileSystem* fs) {
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&fs->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 10;
@@ -718,12 +884,13 @@ Result fsFsCommit(FsFileSystem* fs) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&fs->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
     }
@@ -741,7 +908,7 @@ Result fsFsGetFreeSpace(FsFileSystem* fs, const char* path, u64* out) {
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&fs->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 11;
@@ -750,13 +917,14 @@ Result fsFsGetFreeSpace(FsFileSystem* fs, const char* path, u64* out) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
             u64 space;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&fs->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
 
@@ -778,7 +946,7 @@ Result fsFsGetTotalSpace(FsFileSystem* fs, const char* path, u64* out) {
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&fs->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 12;
@@ -787,19 +955,53 @@ Result fsFsGetTotalSpace(FsFileSystem* fs, const char* path, u64* out) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
             u64 space;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&fs->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
 
         if (R_SUCCEEDED(rc)) {
             *out = resp->space;
         }
+    }
+
+    return rc;
+}
+
+Result fsFsCleanDirectoryRecursively(FsFileSystem* fs, const char* path) {
+    IpcCommand c;
+    ipcInitialize(&c);
+    ipcAddSendStatic(&c, path, FS_MAX_PATH, 0);
+
+    struct {
+        u64 magic;
+        u64 cmd_id;
+    } *raw;
+
+    raw = serviceIpcPrepareHeader(&fs->s, &c, sizeof(*raw));
+
+    raw->magic = SFCI_MAGIC;
+    raw->cmd_id = 13;
+
+    Result rc = serviceIpcDispatch(&fs->s);
+
+    if (R_SUCCEEDED(rc)) {
+        IpcParsedCommand r;
+        struct {
+            u64 magic;
+            u64 result;
+        } *resp;
+
+        serviceIpcParse(&fs->s, &r, sizeof(*resp));
+        resp = r.Raw;
+
+        rc = resp->result;
     }
 
     return rc;
@@ -823,7 +1025,7 @@ Result fsFileRead(FsFile* f, u64 off, void* buf, size_t len, size_t* out) {
         u64 read_size;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&f->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 0;
@@ -835,13 +1037,14 @@ Result fsFileRead(FsFile* f, u64 off, void* buf, size_t len, size_t* out) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
             u64 bytes_read;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&f->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
 
@@ -866,7 +1069,7 @@ Result fsFileWrite(FsFile* f, u64 off, const void* buf, size_t len) {
         u64 write_size;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&f->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 1;
@@ -878,12 +1081,13 @@ Result fsFileWrite(FsFile* f, u64 off, const void* buf, size_t len) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&f->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
     }
@@ -900,7 +1104,7 @@ Result fsFileFlush(FsFile* f) {
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&f->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 2;
@@ -909,12 +1113,13 @@ Result fsFileFlush(FsFile* f) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&f->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
     }
@@ -932,7 +1137,7 @@ Result fsFileSetSize(FsFile* f, u64 sz) {
         u64 size;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&f->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 3;
@@ -942,12 +1147,13 @@ Result fsFileSetSize(FsFile* f, u64 sz) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&f->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
     }
@@ -964,7 +1170,7 @@ Result fsFileGetSize(FsFile* f, u64* out) {
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&f->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 4;
@@ -973,13 +1179,14 @@ Result fsFileGetSize(FsFile* f, u64* out) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
             u64 size;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&f->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
         if (R_SUCCEEDED(rc) && out) *out = resp->size;
@@ -1008,7 +1215,7 @@ Result fsDirRead(FsDir* d, u64 inval, size_t* total_entries, size_t max_entries,
         u64 inval;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&d->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 0;
@@ -1018,13 +1225,14 @@ Result fsDirRead(FsDir* d, u64 inval, size_t* total_entries, size_t max_entries,
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
             u64 total_entries;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&d->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
 
@@ -1045,7 +1253,7 @@ Result fsDirGetEntryCount(FsDir* d, u64* count) {
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&d->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 1;
@@ -1054,13 +1262,14 @@ Result fsDirGetEntryCount(FsDir* d, u64* count) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
             u64 count;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&d->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
         if (R_SUCCEEDED(rc) && count) *count = resp->count;
@@ -1082,7 +1291,7 @@ Result fsStorageRead(FsStorage* s, u64 off, void* buf, size_t len) {
         u64 read_size;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&s->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 0;
@@ -1093,14 +1302,152 @@ Result fsStorageRead(FsStorage* s, u64 off, void* buf, size_t len) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&s->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
+    }
+
+    return rc;
+}
+
+Result fsStorageWrite(FsStorage* s, u64 off, const void* buf, size_t len) {
+    IpcCommand c;
+    ipcInitialize(&c);
+    ipcAddSendBuffer(&c, buf, len, 1);
+
+    struct {
+        u64 magic;
+        u64 cmd_id;
+        u64 offset;
+        u64 write_size;
+    } *raw;
+
+    raw = serviceIpcPrepareHeader(&s->s, &c, sizeof(*raw));
+
+    raw->magic = SFCI_MAGIC;
+    raw->cmd_id = 1;
+    raw->offset = off;
+    raw->write_size = len;
+
+    Result rc = serviceIpcDispatch(&s->s);
+
+    if (R_SUCCEEDED(rc)) {
+        IpcParsedCommand r;
+        struct {
+            u64 magic;
+            u64 result;
+        } *resp;
+
+        serviceIpcParse(&s->s, &r, sizeof(*resp));
+        resp = r.Raw;
+
+        rc = resp->result;
+    }
+
+    return rc;
+}
+
+Result fsStorageFlush(FsStorage* s) {
+    IpcCommand c;
+    ipcInitialize(&c);
+
+    struct {
+        u64 magic;
+        u64 cmd_id;
+    } *raw;
+
+    raw = serviceIpcPrepareHeader(&s->s, &c, sizeof(*raw));
+
+    raw->magic = SFCI_MAGIC;
+    raw->cmd_id = 2;
+
+    Result rc = serviceIpcDispatch(&s->s);
+
+    if (R_SUCCEEDED(rc)) {
+        IpcParsedCommand r;
+        struct {
+            u64 magic;
+            u64 result;
+        } *resp;
+
+        serviceIpcParse(&s->s, &r, sizeof(*resp));
+        resp = r.Raw;
+
+        rc = resp->result;
+    }
+
+    return rc;
+}
+
+Result fsStorageSetSize(FsStorage* s, u64 sz) {
+    IpcCommand c;
+    ipcInitialize(&c);
+
+    struct {
+        u64 magic;
+        u64 cmd_id;
+        u64 size;
+    } *raw;
+
+    raw = serviceIpcPrepareHeader(&s->s, &c, sizeof(*raw));
+
+    raw->magic = SFCI_MAGIC;
+    raw->cmd_id = 3;
+    raw->size = sz;
+
+    Result rc = serviceIpcDispatch(&s->s);
+
+    if (R_SUCCEEDED(rc)) {
+        IpcParsedCommand r;
+        struct {
+            u64 magic;
+            u64 result;
+        } *resp;
+
+        serviceIpcParse(&s->s, &r, sizeof(*resp));
+        resp = r.Raw;
+
+        rc = resp->result;
+    }
+
+    return rc;
+}
+
+Result fsStorageGetSize(FsStorage* s, u64* out) {
+    IpcCommand c;
+    ipcInitialize(&c);
+
+    struct {
+        u64 magic;
+        u64 cmd_id;
+    } *raw;
+
+    raw = serviceIpcPrepareHeader(&s->s, &c, sizeof(*raw));
+
+    raw->magic = SFCI_MAGIC;
+    raw->cmd_id = 4;
+
+    Result rc = serviceIpcDispatch(&s->s);
+
+    if (R_SUCCEEDED(rc)) {
+        IpcParsedCommand r;
+        struct {
+            u64 magic;
+            u64 result;
+            u64 size;
+        } *resp;
+
+        serviceIpcParse(&s->s, &r, sizeof(*resp));
+        resp = r.Raw;
+
+        rc = resp->result;
+        if (R_SUCCEEDED(rc) && out) *out = resp->size;
     }
 
     return rc;
@@ -1121,7 +1468,7 @@ Result fsSaveDataIteratorRead(FsSaveDataIterator *s, FsSaveDataInfo* buf, size_t
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&s->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 0;
@@ -1130,13 +1477,14 @@ Result fsSaveDataIteratorRead(FsSaveDataIterator *s, FsSaveDataInfo* buf, size_t
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
             u64 total_entries;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&s->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
 
@@ -1162,7 +1510,7 @@ Result fsEventNotifierGetEventHandle(FsEventNotifier* e, Handle* out) {
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&e->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 0;
@@ -1171,12 +1519,13 @@ Result fsEventNotifierGetEventHandle(FsEventNotifier* e, Handle* out) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&e->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
 
@@ -1202,7 +1551,7 @@ Result fsDeviceOperatorIsSdCardInserted(FsDeviceOperator* d, bool* out) {
         u64 cmd_id;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&d->s, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 0;
@@ -1211,13 +1560,14 @@ Result fsDeviceOperatorIsSdCardInserted(FsDeviceOperator* d, bool* out) {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
             u8 is_inserted;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&d->s, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
 

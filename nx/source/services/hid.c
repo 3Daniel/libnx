@@ -19,11 +19,13 @@ static HidMouseEntry g_mouseEntry;
 static HidKeyboardEntry g_keyboardEntry;
 static HidControllerHeader g_controllerHeaders[10];
 static HidControllerInputEntry g_controllerEntries[10];
+static HidControllerSixAxisLayout g_sixaxisLayouts[10];
 
 static u64 g_mouseOld, g_mouseHeld, g_mouseDown, g_mouseUp;
 static u64 g_keyboardModOld, g_keyboardModHeld, g_keyboardModDown, g_keyboardModUp;
 static u32 g_keyboardOld[8], g_keyboardHeld[8], g_keyboardDown[8], g_keyboardUp[8];
 static u64 g_controllerOld[10], g_controllerHeld[10], g_controllerDown[10], g_controllerUp[10];
+static bool g_sixaxisEnabled[10];
 
 static HidControllerLayoutType g_controllerLayout[10];
 static u64 g_touchTimestamp, g_mouseTimestamp, g_keyboardTimestamp, g_controllerTimestamps[10];
@@ -35,22 +37,40 @@ static RwLock g_hidLock;
 static Result _hidCreateAppletResource(Service* srv, Service* srv_out, u64 AppletResourceUserId);
 static Result _hidGetSharedMemoryHandle(Service* srv, Handle* handle_out);
 
+static Result _hidActivateNpad(void);
+static Result _hidDeactivateNpad(void);
+
 static Result _hidSetDualModeAll(void);
 
 Result hidInitialize(void)
 {
+    HidControllerID idbuf[9] = {
+        CONTROLLER_PLAYER_1,
+        CONTROLLER_PLAYER_2,
+        CONTROLLER_PLAYER_3,
+        CONTROLLER_PLAYER_4,
+        CONTROLLER_PLAYER_5,
+        CONTROLLER_PLAYER_6,
+        CONTROLLER_PLAYER_7,
+        CONTROLLER_PLAYER_8,
+        CONTROLLER_HANDHELD};
+
     atomicIncrement64(&g_refCnt);
 
     if (serviceIsActive(&g_hidSrv))
         return 0;
+
+    if (R_FAILED(appletInitialize()))
+        return MAKERESULT(Module_Libnx, LibnxError_AppletFailedToInitialize);
 
     Result rc;
     Handle sharedmem_handle;
     u64 AppletResourceUserId;
 
     rc = appletGetAppletResourceUserId(&AppletResourceUserId);
+    // If this failed (for example because we're a sysmodule) AppletResourceUserId stays zero
     if (R_FAILED(rc))
-        return rc;
+        AppletResourceUserId = 0;
 
     rc = smGetService(&g_hidSrv, "hid");
     if (R_FAILED(rc))
@@ -69,6 +89,15 @@ Result hidInitialize(void)
     }
 
     if (R_SUCCEEDED(rc))
+        rc = _hidActivateNpad();
+
+    if (R_SUCCEEDED(rc))
+        rc = hidSetSupportedNpadStyleSet(TYPE_PROCONTROLLER | TYPE_HANDHELD | TYPE_JOYCON_PAIR | TYPE_JOYCON_LEFT | TYPE_JOYCON_RIGHT);
+
+    if (R_SUCCEEDED(rc))
+        rc = hidSetSupportedNpadIdType(idbuf, 9);
+
+    if (R_SUCCEEDED(rc))
         rc = _hidSetDualModeAll();
 
     if (R_FAILED(rc))
@@ -84,9 +113,13 @@ void hidExit(void)
     {
         _hidSetDualModeAll();
 
+        _hidDeactivateNpad();
+
         serviceClose(&g_hidIAppletResource);
         serviceClose(&g_hidSrv);
         shmemClose(&g_hidSharedmem);
+
+        appletExit();
     }
 }
 
@@ -100,6 +133,8 @@ void hidReset(void)
     memset(&g_keyboardEntry, 0, sizeof(HidKeyboardEntry));
     memset(g_controllerHeaders, 0, sizeof(g_controllerHeaders));
     memset(g_controllerEntries, 0, sizeof(g_controllerEntries));
+    memset(g_sixaxisLayouts, 0, sizeof(g_sixaxisLayouts));
+    memset(g_sixaxisEnabled, 0, sizeof(g_sixaxisEnabled));
 
     g_mouseOld = g_mouseHeld = g_mouseDown = g_mouseUp = 0;
     g_keyboardModOld = g_keyboardModHeld = g_keyboardModDown = g_keyboardModUp = 0;
@@ -164,6 +199,7 @@ void hidScanInput(void) {
     memset(&g_mouseEntry, 0, sizeof(HidMouseEntry));
     memset(&g_keyboardEntry, 0, sizeof(HidKeyboardEntry));
     memset(g_controllerEntries, 0, sizeof(g_controllerEntries));
+    memset(g_sixaxisLayouts, 0, sizeof(g_sixaxisLayouts));
 
     u64 latestTouchEntry = sharedMem->touchscreen.header.latestEntry;
     HidTouchScreenEntry *newTouchEntry = &sharedMem->touchscreen.entries[latestTouchEntry];
@@ -218,6 +254,34 @@ void hidScanInput(void) {
 
         g_controllerDown[i] = (~g_controllerOld[i]) & g_controllerHeld[i];
         g_controllerUp[i] = g_controllerOld[i] & (~g_controllerHeld[i]);
+
+        if (g_sixaxisEnabled[i]) {
+            u32 type = g_controllerHeaders[i].type;
+            HidControllerSixAxisLayout *sixaxis = NULL;
+            if (type & TYPE_PROCONTROLLER) {
+                sixaxis = &sharedMem->controllers[i].sixaxis[0];
+            }
+            else if (type & TYPE_HANDHELD) {
+                sixaxis = &sharedMem->controllers[i].sixaxis[1];
+            }
+            else if (type & TYPE_JOYCON_PAIR) {
+                if (type & TYPE_JOYCON_LEFT) {
+                    sixaxis = &sharedMem->controllers[i].sixaxis[2];
+                }
+                else {
+                    sixaxis = &sharedMem->controllers[i].sixaxis[3];
+                }
+            }
+            else if (type & TYPE_JOYCON_LEFT) {
+                sixaxis = &sharedMem->controllers[i].sixaxis[4];
+            }
+            else if (type & TYPE_JOYCON_RIGHT) {
+                sixaxis = &sharedMem->controllers[i].sixaxis[5];
+            }
+            if (sixaxis) {
+                memcpy(&g_sixaxisLayouts[i], sixaxis, sizeof(*sixaxis));
+            }
+        }
     }
 
     g_controllerP1AutoID = CONTROLLER_HANDHELD;
@@ -227,8 +291,7 @@ void hidScanInput(void) {
     rwlockWriteUnlock(&g_hidLock);
 }
 
-//TODO: Why is this field in sharedmem zeros?
-/*u32 hidGetControllerType(HidControllerID id) {
+HidControllerType hidGetControllerType(HidControllerID id) {
     if (id==CONTROLLER_P1_AUTO) return hidGetControllerType(g_controllerP1AutoID);
     if (id < 0 || id > 9) return 0;
 
@@ -237,7 +300,50 @@ void hidScanInput(void) {
     rwlockReadUnlock(&g_hidLock);
 
     return tmp;
-}*/
+}
+
+void hidGetControllerColors(HidControllerID id, HidControllerColors *colors) {
+    if (id==CONTROLLER_P1_AUTO) {
+        hidGetControllerColors(g_controllerP1AutoID, colors);
+        return;
+    }
+    if (id < 0 || id > 9) return;
+    if (colors == NULL) return;
+
+    HidControllerHeader *hdr = &g_controllerHeaders[id];
+
+    memset(colors, 0, sizeof(HidControllerColors));
+
+    rwlockReadLock(&g_hidLock);
+
+    colors->singleSet = (hdr->singleColorsDescriptor & BIT(1)) == 0;
+    colors->splitSet = (hdr->splitColorsDescriptor & BIT(1)) == 0;
+
+    if (colors->singleSet) {
+        colors->singleColorBody = hdr->singleColorBody;
+        colors->singleColorButtons = hdr->singleColorButtons;
+    }
+
+    if (colors->splitSet) {
+        colors->leftColorBody = hdr->leftColorBody;
+        colors->leftColorButtons = hdr->leftColorButtons;
+        colors->rightColorBody = hdr->rightColorBody;
+        colors->rightColorButtons = hdr->rightColorButtons;
+    }
+
+    rwlockReadUnlock(&g_hidLock);
+}
+
+bool hidIsControllerConnected(HidControllerID id) {
+    if (id==CONTROLLER_P1_AUTO)
+        return hidIsControllerConnected(g_controllerP1AutoID);
+    if (id < 0 || id > 9) return 0;
+
+    rwlockReadLock(&g_hidLock);
+    bool flag = (g_controllerEntries[id].connectionState & CONTROLLER_STATE_CONNECTED) != 0;
+    rwlockReadUnlock(&g_hidLock);
+    return flag;
+}
 
 u64 hidKeysHeld(HidControllerID id) {
     if (id==CONTROLLER_P1_AUTO) return hidKeysHeld(g_controllerP1AutoID);
@@ -385,6 +491,46 @@ void hidJoystickRead(JoystickPosition *pos, HidControllerID id, HidControllerJoy
     }
 }
 
+u32 hidSixAxisSensorValuesRead(SixAxisSensorValues *values, HidControllerID id, u32 num_entries) {
+    int entry;
+    int i;
+
+    if (!values || !num_entries) return 0;
+
+    if (id == CONTROLLER_P1_AUTO) return hidSixAxisSensorValuesRead(values, g_controllerP1AutoID, num_entries);
+
+    memset(values, 0, sizeof(SixAxisSensorValues) * num_entries);
+    if (id < 0 || id > 9) return 0;
+
+    rwlockReadLock(&g_hidLock);
+    if (!g_sixaxisEnabled[id]) {
+        rwlockReadUnlock(&g_hidLock);
+        return 0;
+    }
+
+    if (num_entries > g_sixaxisLayouts[id].header.maxEntryIndex + 1)
+        num_entries = g_sixaxisLayouts[id].header.maxEntryIndex + 1;
+
+    entry = g_sixaxisLayouts[id].header.latestEntry + 1 - num_entries;
+    if (entry < 0)
+        entry += g_sixaxisLayouts[id].header.maxEntryIndex + 1;
+
+    u64 timestamp = 0;
+    for (i = 0; i < num_entries; i++) {
+        if (timestamp && g_sixaxisLayouts[id].entries[entry].timestamp - timestamp != 1)
+            break;
+        memcpy(&values[i], &g_sixaxisLayouts[id].entries[entry].values, sizeof(SixAxisSensorValues));
+        timestamp = g_sixaxisLayouts[id].entries[entry].timestamp;
+
+        entry++;
+        if (entry > g_sixaxisLayouts[id].header.maxEntryIndex)
+            entry = 0;
+    }
+    rwlockReadUnlock(&g_hidLock);
+
+    return i;
+}
+
 bool hidGetHandheldMode(void) {
     return g_controllerP1AutoID == CONTROLLER_HANDHELD;
 }
@@ -475,13 +621,32 @@ static Result _hidGetSharedMemoryHandle(Service* srv, Handle* handle_out) {
     return rc;
 }
 
-Result hidSetNpadJoyAssignmentModeSingleByDefault(HidControllerID id) {
+Result hidSetSupportedNpadIdType(HidControllerID *buf, size_t count) {
     Result rc;
     u64 AppletResourceUserId;
+    size_t i;
+    u32 tmpval=0;
+    u32 tmpbuf[10];
 
     rc = appletGetAppletResourceUserId(&AppletResourceUserId);
     if (R_FAILED(rc))
-        return rc;
+        AppletResourceUserId = 0;
+
+    if (count > 10)
+        return MAKERESULT(Module_Libnx, LibnxError_OutOfMemory);
+
+    memset(tmpbuf, 0, sizeof(tmpbuf));
+    for (i=0; i<count; i++) {
+        tmpval = buf[i];
+        if (tmpval == CONTROLLER_HANDHELD) {
+            tmpval = 0x20;
+        }
+        else if (tmpval >= CONTROLLER_UNKNOWN) {
+            return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+        }
+
+        tmpbuf[i] = tmpval;
+    }
 
     IpcCommand c;
     ipcInitialize(&c);
@@ -489,17 +654,17 @@ Result hidSetNpadJoyAssignmentModeSingleByDefault(HidControllerID id) {
     struct {
         u64 magic;
         u64 cmd_id;
-        u32 id;
         u64 AppletResourceUserId;
     } *raw;
 
     ipcSendPid(&c);
 
+    ipcAddSendStatic(&c, tmpbuf, sizeof(u32)*count, 0);
+
     raw = ipcPrepareHeader(&c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
-    raw->cmd_id = 122;
-    raw->id = id;
+    raw->cmd_id = 102;
     raw->AppletResourceUserId = AppletResourceUserId;
 
     rc = serviceIpcDispatch(&g_hidSrv);
@@ -519,13 +684,13 @@ Result hidSetNpadJoyAssignmentModeSingleByDefault(HidControllerID id) {
     return rc;
 }
 
-Result hidSetNpadJoyAssignmentModeDual(HidControllerID id) {
+static Result _hidCmdWithInputU32(u64 cmd_id, u32 inputval) {
     Result rc;
     u64 AppletResourceUserId;
 
     rc = appletGetAppletResourceUserId(&AppletResourceUserId);
     if (R_FAILED(rc))
-        return rc;
+        AppletResourceUserId = 0;
 
     IpcCommand c;
     ipcInitialize(&c);
@@ -533,7 +698,7 @@ Result hidSetNpadJoyAssignmentModeDual(HidControllerID id) {
     struct {
         u64 magic;
         u64 cmd_id;
-        u32 id;
+        u32 val;
         u64 AppletResourceUserId;
     } *raw;
 
@@ -542,8 +707,8 @@ Result hidSetNpadJoyAssignmentModeDual(HidControllerID id) {
     raw = ipcPrepareHeader(&c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
-    raw->cmd_id = 124;
-    raw->id = id;
+    raw->cmd_id = cmd_id;
+    raw->val = inputval;
     raw->AppletResourceUserId = AppletResourceUserId;
 
     rc = serviceIpcDispatch(&g_hidSrv);
@@ -561,6 +726,116 @@ Result hidSetNpadJoyAssignmentModeDual(HidControllerID id) {
     }
 
     return rc;
+}
+
+static Result _hidCmdWithInputU64(u64 cmd_id, u64 inputval) {
+    Result rc;
+    u64 AppletResourceUserId;
+
+    rc = appletGetAppletResourceUserId(&AppletResourceUserId);
+    if (R_FAILED(rc))
+        AppletResourceUserId = 0;
+
+    IpcCommand c;
+    ipcInitialize(&c);
+
+    struct {
+        u64 magic;
+        u64 cmd_id;
+        u64 AppletResourceUserId;
+        u64 val;
+    } *raw;
+
+    ipcSendPid(&c);
+
+    raw = ipcPrepareHeader(&c, sizeof(*raw));
+
+    raw->magic = SFCI_MAGIC;
+    raw->cmd_id = cmd_id;
+    raw->val = inputval;
+    raw->AppletResourceUserId = AppletResourceUserId;
+
+    rc = serviceIpcDispatch(&g_hidSrv);
+
+    if (R_SUCCEEDED(rc)) {
+        IpcParsedCommand r;
+        ipcParse(&r);
+
+        struct {
+            u64 magic;
+            u64 result;
+        } *resp = r.Raw;
+
+        rc = resp->result;
+    }
+
+    return rc;
+}
+
+static Result _hidCmdWithNoInput(u64 cmd_id) {
+    Result rc;
+    u64 AppletResourceUserId;
+
+    rc = appletGetAppletResourceUserId(&AppletResourceUserId);
+    if (R_FAILED(rc))
+        AppletResourceUserId = 0;
+
+    IpcCommand c;
+    ipcInitialize(&c);
+
+    struct {
+        u64 magic;
+        u64 cmd_id;
+        u64 AppletResourceUserId;
+    } *raw;
+
+    ipcSendPid(&c);
+
+    raw = ipcPrepareHeader(&c, sizeof(*raw));
+
+    raw->magic = SFCI_MAGIC;
+    raw->cmd_id = cmd_id;
+    raw->AppletResourceUserId = AppletResourceUserId;
+
+    rc = serviceIpcDispatch(&g_hidSrv);
+
+    if (R_SUCCEEDED(rc)) {
+        IpcParsedCommand r;
+        ipcParse(&r);
+
+        struct {
+            u64 magic;
+            u64 result;
+        } *resp = r.Raw;
+
+        rc = resp->result;
+    }
+
+    return rc;
+}
+
+Result hidSetSupportedNpadStyleSet(HidControllerType type) {
+    return _hidCmdWithInputU32(100, type);
+}
+
+static Result _hidActivateNpad(void) {
+    return _hidCmdWithNoInput(103);
+}
+
+static Result _hidDeactivateNpad(void) {
+    return _hidCmdWithNoInput(104);
+}
+
+Result hidSetNpadJoyHoldType(u64 type) {
+    return _hidCmdWithInputU64(120, type);
+}
+
+Result hidSetNpadJoyAssignmentModeSingleByDefault(HidControllerID id) {
+    return _hidCmdWithInputU32(122, id);
+}
+
+Result hidSetNpadJoyAssignmentModeDual(HidControllerID id) {
+    return _hidCmdWithInputU32(124, id);
 }
 
 Result hidMergeSingleJoyAsDualJoy(HidControllerID id0, HidControllerID id1) {
@@ -569,7 +844,7 @@ Result hidMergeSingleJoyAsDualJoy(HidControllerID id0, HidControllerID id1) {
 
     rc = appletGetAppletResourceUserId(&AppletResourceUserId);
     if (R_FAILED(rc))
-        return rc;
+        AppletResourceUserId = 0;
 
     IpcCommand c;
     ipcInitialize(&c);
@@ -720,7 +995,7 @@ Result hidSendVibrationValue(u32 *VibrationDeviceHandle, HidVibrationValue *Vibr
 
     rc = appletGetAppletResourceUserId(&AppletResourceUserId);
     if (R_FAILED(rc))
-        return rc;
+        AppletResourceUserId = 0;
 
     IpcCommand c;
     ipcInitialize(&c);
@@ -766,7 +1041,7 @@ Result hidGetActualVibrationValue(u32 *VibrationDeviceHandle, HidVibrationValue 
 
     rc = appletGetAppletResourceUserId(&AppletResourceUserId);
     if (R_FAILED(rc))
-        return rc;
+        AppletResourceUserId = 0;
 
     IpcCommand c;
     ipcInitialize(&c);
@@ -881,7 +1156,7 @@ Result hidSendVibrationValues(u32 *VibrationDeviceHandles, HidVibrationValue *Vi
 
     rc = appletGetAppletResourceUserId(&AppletResourceUserId);
     if (R_FAILED(rc))
-        return rc;
+        AppletResourceUserId = 0;
 
     IpcCommand c;
     ipcInitialize(&c);
@@ -918,20 +1193,18 @@ Result hidSendVibrationValues(u32 *VibrationDeviceHandles, HidVibrationValue *Vi
     return rc;
 }
 
-Result hidInitializeVibrationDevices(u32 *VibrationDeviceHandles, size_t total_handles, HidControllerID id, HidControllerType type) {
+static Result _hidGetDeviceHandles(u32 devicetype, u32 *DeviceHandles, size_t total_handles, HidControllerID id, HidControllerType type) {
     Result rc=0;
-    Service srv;
     u32 tmp_type = type & 0xff;
     u32 tmp_id = id;
-    size_t i;
 
-    if (total_handles == 0 || total_handles > 2)
+    if (total_handles == 0 || total_handles > 2 || devicetype > 1)
         return MAKERESULT(Module_Libnx, LibnxError_BadInput);
 
     if (tmp_id == CONTROLLER_HANDHELD)
         tmp_id = 0x20;
 
-    if (tmp_type & LAYOUT_PROCONTROLLER) {
+    if (tmp_type & TYPE_PROCONTROLLER) {
         tmp_type = 3;
     }
     else if (tmp_type & TYPE_HANDHELD) {
@@ -947,25 +1220,45 @@ Result hidInitializeVibrationDevices(u32 *VibrationDeviceHandles, size_t total_h
         tmp_type = 7;
         tmp_type |= 0x010000;
     }
-    //The HidControllerID enum doesn't have bit29/bit30 checked by official sw, for tmp_type 0x20/0x21.
+    //Official sw checks for these bits but libnx hid.h doesn't have these currently.
     else if (tmp_type & BIT(29)) {
         tmp_type = 0x20;
     }
     else if (tmp_type & BIT(30)) {
         tmp_type = 0x21;
     }
+    else {
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+    }
 
-    VibrationDeviceHandles[0] = tmp_type | (tmp_id & 0xff)<<8;
+    DeviceHandles[0] = tmp_type | (tmp_id & 0xff)<<8;
+
+    if (devicetype==1 && (tmp_type==3 || tmp_type==4))
+        DeviceHandles[0] |= 0x020000;
 
     if (total_handles > 1) {
         tmp_type &= 0xff;
-        if (tmp_type!=6 && tmp_type!=7) {
-            VibrationDeviceHandles[1] = VibrationDeviceHandles[0] | 0x010000;
+        if (devicetype==0 && (tmp_type!=6 && tmp_type!=7)) {
+            DeviceHandles[1] = DeviceHandles[0] | 0x010000;
+        }
+        else if (devicetype==1 && tmp_type==5) {
+            DeviceHandles[1] = DeviceHandles[0] | 0x010000;
         }
         else {
             return MAKERESULT(Module_Libnx, LibnxError_BadInput);
         }
     }
+
+    return rc;
+}
+
+Result hidInitializeVibrationDevices(u32 *VibrationDeviceHandles, size_t total_handles, HidControllerID id, HidControllerType type) {
+    Result rc=0;
+    Service srv;
+    size_t i;
+
+    rc = _hidGetDeviceHandles(0, VibrationDeviceHandles, total_handles, id, type);
+    if (R_FAILED(rc)) return rc;
 
     for (i=0; i<total_handles; i++) {
         rc = _hidCreateActiveVibrationDeviceList(&srv);
@@ -979,6 +1272,40 @@ Result hidInitializeVibrationDevices(u32 *VibrationDeviceHandles, size_t total_h
             break;
     }
 
+    return rc;
+}
+
+Result hidGetSixAxisSensorHandles(u32 *SixAxisSensorHandles, size_t total_handles, HidControllerID id, HidControllerType type) {
+    return _hidGetDeviceHandles(1, SixAxisSensorHandles, total_handles, id, type);
+}
+
+Result hidStartSixAxisSensor(u32 SixAxisSensorHandle) {
+    u32 rc = _hidCmdWithInputU32(66, SixAxisSensorHandle);
+    if (R_SUCCEEDED(rc)) {
+        int controller = (SixAxisSensorHandle >> 8) & 0xff;
+        if (controller == 0x20)
+            controller = CONTROLLER_HANDHELD;
+        if (controller < 10) {
+            rwlockWriteLock(&g_hidLock);
+            g_sixaxisEnabled[controller] = true;
+            rwlockWriteUnlock(&g_hidLock);
+        }
+    }
+    return rc;
+}
+
+Result hidStopSixAxisSensor(u32 SixAxisSensorHandle) {
+    u32 rc = _hidCmdWithInputU32(67, SixAxisSensorHandle);
+    if (R_SUCCEEDED(rc)) {
+        int controller = (SixAxisSensorHandle >> 8) & 0xff;
+        if (controller == 0x20)
+            controller = CONTROLLER_HANDHELD;
+        if (controller < 10) {
+            rwlockWriteLock(&g_hidLock);
+            g_sixaxisEnabled[controller] = false;
+            rwlockWriteUnlock(&g_hidLock);
+        }
+    }
     return rc;
 }
 

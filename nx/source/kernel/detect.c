@@ -8,12 +8,13 @@ static bool g_IsAbove200;
 static bool g_IsAbove300;
 static bool g_IsAbove400;
 static bool g_IsAbove500;
+static bool g_IsAbove600;
 static bool g_HasCached = 0;
 static Mutex g_Mutex;
 
 static void _CacheValues(void)
 {
-    if (g_HasCached)
+    if (__atomic_load_n(&g_HasCached, __ATOMIC_SEQ_CST))
         return;
 
     mutexLock(&g_Mutex);
@@ -28,12 +29,14 @@ static void _CacheValues(void)
     g_IsAbove300 = (svcGetInfo(&tmp, 18, INVALID_HANDLE, 0) != 0xF001);
     g_IsAbove400 = (svcGetInfo(&tmp, 19, INVALID_HANDLE, 0) != 0xF001);
     g_IsAbove500 = (svcGetInfo(&tmp, 20, INVALID_HANDLE, 0) != 0xF001);
+    g_IsAbove600 = (svcGetInfo(&tmp, 21, INVALID_HANDLE, 0) != 0xF001);
 
+    g_IsAbove500 |= g_IsAbove600;
     g_IsAbove400 |= g_IsAbove500;
     g_IsAbove300 |= g_IsAbove400;
     g_IsAbove200 |= g_IsAbove300;
 
-    g_HasCached = true;
+    __atomic_store_n(&g_HasCached, true, __ATOMIC_SEQ_CST);
 
     mutexUnlock(&g_Mutex);
 }
@@ -56,6 +59,11 @@ bool kernelAbove400(void) {
 bool kernelAbove500(void) {
     _CacheValues();
     return g_IsAbove500;
+}
+
+bool kernelAbove600(void) {
+    _CacheValues();
+    return g_IsAbove600;
 }
 
 bool detectDebugger(void) {

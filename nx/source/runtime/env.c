@@ -3,6 +3,7 @@
 #include "runtime/env.h"
 #include "services/sm.h"
 #include "services/fatal.h"
+#include "services/applet.h"
 
 void NORETURN __nx_exit(Result rc, LoaderReturnFn retaddr);
 
@@ -17,6 +18,8 @@ static Handle g_processHandle = INVALID_HANDLE;
 static char*  g_nextLoadPath = NULL;
 static char*  g_nextLoadArgv = NULL;
 static Result g_lastLoadResult = 0;
+static bool   g_hasRandomSeed = false;
+static u64    g_randomSeed[2] = { 0, 0 };
 
 extern __attribute__((weak)) u32 __nx_applet_type;
 
@@ -79,6 +82,7 @@ void envSetup(void* ctx, Handle main_thread, LoaderReturnFn saved_lr)
 
         case EntryType_AppletType:
             __nx_applet_type = ent->Value[0];
+            if ((ent->Value[1] & EnvAppletFlags_ApplicationOverride) && __nx_applet_type == AppletType_SystemApplication) __nx_applet_type = AppletType_Application;
             break;
 
         case EntryType_ProcessHandle:
@@ -89,11 +93,17 @@ void envSetup(void* ctx, Handle main_thread, LoaderReturnFn saved_lr)
             g_lastLoadResult = ent->Value[0];
             break;
 
+        case EntryType_RandomSeed:
+            g_hasRandomSeed = true;
+            g_randomSeed[0] = ent->Value[0];
+            g_randomSeed[1] = ent->Value[1];
+            break;
+
         default:
             if (ent->Flags & EntryFlag_IsMandatory)
             {
                 // Encountered unknown but mandatory key, bail back to loader.
-                __nx_exit(MAKERESULT(346, 100 + ent->Key), g_loaderRetAddr);
+                __nx_exit(MAKERESULT(Module_HomebrewAbi, 100 + ent->Key), g_loaderRetAddr);
             }
 
             break;
@@ -148,6 +158,10 @@ LoaderReturnFn envGetExitFuncPtr(void) {
     return g_loaderRetAddr;
 }
 
+void envSetExitFuncPtr(LoaderReturnFn addr) {
+    g_loaderRetAddr = addr;
+}
+
 Result envSetNextLoad(const char* path, const char* argv)
 {
     if (g_nextLoadPath == NULL)
@@ -172,4 +186,13 @@ bool envHasNextLoad(void) {
 
 Result envGetLastLoadResult(void) {
     return g_lastLoadResult;
+}
+
+bool envHasRandomSeed(void) {
+    return g_hasRandomSeed;
+}
+
+void envGetRandomSeed(u64 out[2]) {
+    out[0] = g_randomSeed[0];
+    out[1] = g_randomSeed[1];
 }

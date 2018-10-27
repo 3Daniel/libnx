@@ -3,7 +3,7 @@
 
 _start:
     b startup
-    .word 0
+    .word __nx_mod0 - _start
     .ascii "HOMEBREW"
 
 .org _start+0x80
@@ -55,8 +55,8 @@ bss_loop:
     ldr  w0, [x0, #:lo12:__system_argc]
     adrp x1, __system_argv // argv
     ldr  x1, [x1, #:lo12:__system_argv]
-    adrp x30, __libnx_exit
-    add  x30, x30, #:lo12:__libnx_exit
+    adrp x30, exit
+    add  x30, x30, #:lo12:exit
     b    main
 
 .global __nx_exit
@@ -69,3 +69,13 @@ __nx_exit:
 
     // jump back to loader
     br   x1
+
+.global __nx_mod0
+__nx_mod0:
+    .ascii "MOD0"
+    .word  _DYNAMIC             - __nx_mod0
+    .word  __bss_start__        - __nx_mod0
+    .word  __bss_end__          - __nx_mod0
+    .word  __eh_frame_hdr_start - __nx_mod0
+    .word  __eh_frame_hdr_end   - __nx_mod0
+    .word  0 // "offset to runtime-generated module object" (??)

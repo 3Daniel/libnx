@@ -12,7 +12,7 @@
 static Service g_fsldrSrv;
 static u64 g_fsldrRefCnt;
 
-Result fsldrSetCurrentProcess();
+Result fsldrSetCurrentProcess(void);
 
 Result fsldrInitialize(void) {
     atomicIncrement64(&g_fsldrRefCnt);
@@ -21,6 +21,10 @@ Result fsldrInitialize(void) {
         return 0;
 
     Result rc = smGetService(&g_fsldrSrv, "fsp-ldr");
+    
+    if (R_SUCCEEDED(rc)) {
+        rc = serviceConvertToDomain(&g_fsldrSrv);
+    }
 
     if (R_SUCCEEDED(rc) && kernelAbove400()) {
         rc = fsldrSetCurrentProcess();
@@ -47,7 +51,7 @@ Result fsldrOpenCodeFileSystem(u64 tid, const char *path, FsFileSystem* out) {
         u64 tid;
     } *raw;
     
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&g_fsldrSrv, &c, sizeof(*raw));
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 0;
     raw->tid = tid;
@@ -57,17 +61,18 @@ Result fsldrOpenCodeFileSystem(u64 tid, const char *path, FsFileSystem* out) {
     
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&g_fsldrSrv, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
         
         if (R_SUCCEEDED(rc)) {
-            serviceCreate(&out->s, r.Handles[0]);
+            serviceCreateSubservice(&out->s, &g_fsldrSrv, &r, 0);
         }
     }
     
@@ -84,7 +89,7 @@ Result fsldrIsArchivedProgram(u64 pid, bool *out) {
         u64 pid;
     } *raw;
     
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&g_fsldrSrv, &c, sizeof(*raw));
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 1;
     raw->pid = pid;
@@ -93,13 +98,14 @@ Result fsldrIsArchivedProgram(u64 pid, bool *out) {
     
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
             u8 is_archived;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&g_fsldrSrv, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
         
@@ -111,7 +117,7 @@ Result fsldrIsArchivedProgram(u64 pid, bool *out) {
     return rc;
 }
 
-Result fsldrSetCurrentProcess() {
+Result fsldrSetCurrentProcess(void) {
     IpcCommand c;
     ipcInitialize(&c);
     ipcSendPid(&c);
@@ -122,7 +128,7 @@ Result fsldrSetCurrentProcess() {
         u64 unk;
     } *raw;
 
-    raw = ipcPrepareHeader(&c, sizeof(*raw));
+    raw = serviceIpcPrepareHeader(&g_fsldrSrv, &c, sizeof(*raw));
 
     raw->magic = SFCI_MAGIC;
     raw->cmd_id = 2;
@@ -132,12 +138,13 @@ Result fsldrSetCurrentProcess() {
 
     if (R_SUCCEEDED(rc)) {
         IpcParsedCommand r;
-        ipcParse(&r);
-
         struct {
             u64 magic;
             u64 result;
-        } *resp = r.Raw;
+        } *resp;
+
+        serviceIpcParse(&g_fsldrSrv, &r, sizeof(*resp));
+        resp = r.Raw;
 
         rc = resp->result;
     }

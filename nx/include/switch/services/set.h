@@ -5,6 +5,7 @@
  * @author yellows8
  * @copyright libnx Authors
  */
+#pragma once
 #include "../result.h"
 
 #define SET_MAX_NAME_SIZE 0x48
@@ -63,6 +64,22 @@ typedef enum {
     SetSysFlag_HeadphoneVolumeUpdate = 117,
 } SetSysFlag;
 
+/// Structure returned by \ref setsysGetFirmwareVersion
+typedef struct {
+    u8 major;
+    u8 minor;
+    u8 micro;
+    u8 padding1;
+    u8 revision_major;
+    u8 revision_minor;
+    u8 padding2;
+    u8 padding3;
+    char platform[0x20];
+    char version_hash[0x40];
+    char display_version[0x18];
+    char display_title[0x80];
+} SetSysFirmwareVersion;
+
 Result setInitialize(void);
 void setExit(void);
 
@@ -74,7 +91,7 @@ Result setMakeLanguageCode(s32 Language, u64 *LanguageCode);
 
 /// Gets the current system LanguageCode.
 /// Normally this should be used instead of \ref setGetLanguageCode.
-/// LanguageCode is a string, see here: http://switchbrew.org/index.php?title=Settings_services#LanguageCode
+/// LanguageCode is a string, see here: https://switchbrew.org/wiki/Settings_services#LanguageCode
 Result setGetSystemLanguage(u64 *LanguageCode);
 
 /// Gets the current LanguageCode, \ref setGetSystemLanguage should be used instead normally.
@@ -131,3 +148,9 @@ Result setsysGetFlag(SetSysFlag flag, bool *out);
  * @param enable To enable/disable the flag.
  */
 Result setsysSetFlag(SetSysFlag flag, bool enable);
+
+/**
+ * @brief Gets the system firmware version.
+ * @param out Firmware version to populate.
+ */
+Result setsysGetFirmwareVersion(SetSysFirmwareVersion *out);

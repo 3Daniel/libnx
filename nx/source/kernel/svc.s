@@ -88,6 +88,20 @@ SVC_BEGIN svcSetThreadPriority
 	ret
 SVC_END
 
+SVC_BEGIN svcGetThreadCoreMask
+	stp x0, x1, [sp, #-16]!
+	svc 0xE
+	ldp x3, x4, [sp], #16
+	str w1, [x3]
+	str w2, [x4]
+	ret
+SVC_END
+
+SVC_BEGIN svcSetThreadCoreMask
+	svc 0xF
+	ret
+SVC_END
+
 SVC_BEGIN svcGetCurrentProcessorNumber
 	svc 0x10
 	ret
@@ -260,6 +274,11 @@ SVC_BEGIN svcSetThreadActivity
 	ret
 SVC_END
 
+SVC_BEGIN svcGetThreadContext3
+	svc 0x33
+	ret
+SVC_END
+
 SVC_BEGIN svcCreateSession
 	stp x0, x1, [sp, #-16]!
 	svc 0x40
@@ -356,7 +375,7 @@ SVC_BEGIN svcUnmapTransferMemory
 	ret
 SVC_END
 
-SVC_BEGIN svcCreateInterruptEvent 
+SVC_BEGIN svcCreateInterruptEvent
 	str x0, [sp, #-16]!
 	svc 0x53
 	ldr x2, [sp], #16
@@ -432,6 +451,11 @@ SVC_BEGIN svcGetDebugEvent
 	ret
 SVC_END
 
+SVC_BEGIN svcLegacyContinueDebugEvent
+	svc 0x64
+	ret
+SVC_END
+
 SVC_BEGIN svcContinueDebugEvent
 	svc 0x64
 	ret
@@ -455,6 +479,11 @@ SVC_END
 
 SVC_BEGIN svcGetDebugThreadContext
 	svc 0x67
+	ret
+SVC_END
+
+SVC_BEGIN svcSetDebugThreadContext
+	svc 0x68
 	ret
 SVC_END
 
